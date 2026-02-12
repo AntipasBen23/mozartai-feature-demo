@@ -6,6 +6,7 @@ import { Badge } from "./ui/Badge";
 import { Controls } from "./ui/Controls";
 import { GridHeader } from "./ui/GridHeader";
 import { TrackRow } from "./ui/TrackRow";
+import { MidiMonitor } from "./ui/MidiMonitor";
 import { BAR_COUNT, Genre, Project, Track } from "./ui/types";
 import { cx, ui } from "./ui/theme";
 import { useMidi } from "./hooks/useMidi";
@@ -66,7 +67,13 @@ export default function Page() {
     setTracks((prev) =>
       prev.map((t) => {
         if (t.kind === "Bass" || t.kind === "Drums" || t.kind === "Pads") {
-          return { ...t, clips: t.clips.map((c) => ({ ...c, name: c.name.replace(/\(mock.*\)/, `(mock • ${action})`) })) };
+          return {
+            ...t,
+            clips: t.clips.map((c) => ({
+              ...c,
+              name: c.name.replace(/\(mock.*\)/, `(mock • ${action})`),
+            })),
+          };
         }
         return t;
       })
@@ -117,6 +124,7 @@ export default function Page() {
         </div>
 
         <div className="mt-4 grid grid-cols-12 gap-4">
+          {/* Sidebar */}
           <aside className={cx("col-span-12 md:col-span-3", ui.panel, "p-3")}>
             <div className="flex items-center justify-between">
               <div className="text-sm font-semibold text-white/90">Projects</div>
@@ -146,7 +154,11 @@ export default function Page() {
                     <span className="text-xs text-white/40">{p.updated}</span>
                   </div>
                   <div className="mt-1 flex items-center gap-2 text-xs text-white/40">
-                    <span>{p.genre}</span><span>•</span><span>{p.key}</span><span>•</span><span>{p.bpm} BPM</span>
+                    <span>{p.genre}</span>
+                    <span>•</span>
+                    <span>{p.key}</span>
+                    <span>•</span>
+                    <span>{p.bpm} BPM</span>
                   </div>
                 </button>
               ))}
@@ -171,6 +183,7 @@ export default function Page() {
             </div>
           </aside>
 
+          {/* Main */}
           <main className="col-span-12 md:col-span-9 space-y-4">
             <Controls
               genre={genre}
@@ -187,6 +200,14 @@ export default function Page() {
                 setAiLog((l) => ["Stopped.", ...l].slice(0, 8));
               }}
               onHarmonize={() => runMockAI("Harmonize + add genre groove")}
+            />
+
+            {/* NEW: MIDI Monitor panel */}
+            <MidiMonitor
+              events={midi.events}
+              status={midi.status}
+              inputName={midi.inputName}
+              onClear={midi.clear}
             />
 
             <section className={cx(ui.panel, ui.panelPad)}>
@@ -230,7 +251,9 @@ export default function Page() {
                 <div className="text-xs font-semibold text-white/70">Log</div>
                 <ul className="mt-2 space-y-1 text-xs text-white/50">
                   {aiLog.map((line, i) => (
-                    <li key={i} className="truncate">{line}</li>
+                    <li key={i} className="truncate">
+                      {line}
+                    </li>
                   ))}
                 </ul>
               </div>
