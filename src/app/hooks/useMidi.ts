@@ -14,15 +14,15 @@ export type MidiNoteEvent = {
 };
 
 function isWebMidiSupported() {
-  return typeof navigator !== "undefined" && "requestMIDIAccess" in navigator;
+  return typeof navigator !== "undefined" && typeof navigator.requestMIDIAccess === "function";
 }
 
 export function useMidi(maxEvents: number = 64) {
   const [status, setStatus] = useState<MidiStatus>("idle");
   const [inputName, setInputName] = useState<string | null>(null);
   const [events, setEvents] = useState<MidiNoteEvent[]>([]);
-  const accessRef = useRef<WebMidi.MIDIAccess | null>(null);
-  const inputRef = useRef<WebMidi.MIDIInput | null>(null);
+  const accessRef = useRef<MIDIAccess | null>(null);
+  const inputRef = useRef<MIDIInput | null>(null);
 
   const supported = useMemo(() => isWebMidiSupported(), []);
 
@@ -38,12 +38,8 @@ export function useMidi(maxEvents: number = 64) {
       setStatus("connecting");
 
       try {
-        // @ts-expect-error - WebMIDI types depend on lib dom; runtime exists in Chromium
-        const access: WebMidi.MIDIAccess = await navigator.requestMIDIAccess({
-          sysex: false,
-        });
-
-        if (disposed) return;
+        const access = await navigator.requestMIDIAccess?.({ sysex: false });
+        if (!access || disposed) return;
 
         accessRef.current = access;
 
@@ -60,8 +56,8 @@ export function useMidi(maxEvents: number = 64) {
         setInputName(first.name ?? "MIDI Input");
         setStatus("connected");
 
-        first.onmidimessage = (msg: WebMidi.MIDIMessageEvent) => {
-          const data = msg.data; // Uint8Array [status, note, velocity]
+        first.onmidimessage = (msg: MIDIMessageEvent) => {
+          const data = msg.data;
           if (!data || data.length < 3) return;
 
           const statusByte = data[0];
@@ -70,7 +66,6 @@ export function useMidi(maxEvents: number = 64) {
           const note = data[1];
           const velocity = data[2];
 
-          // 0x90 = note on, 0x80 = note off
           const isNoteOn = command === 0x90 && velocity > 0;
           const isNoteOff = command === 0x80 || (command === 0x90 && velocity === 0);
 
@@ -84,15 +79,11 @@ export function useMidi(maxEvents: number = 64) {
             ts: performance.now(),
           };
 
-          setEvents((prev) => {
-            const next = [ev, ...prev];
-            return next.slice(0, maxEvents);
-          });
+          setEvents((prev) => [ev, ...prev].slice(0, maxEvents));
         };
       } catch (e: any) {
         if (disposed) return;
 
-        // Browser can throw SecurityError / NotAllowedError etc.
         const name = String(e?.name || "");
         if (name.includes("NotAllowed") || name.includes("Security")) setStatus("denied");
         else setStatus("error");
@@ -103,7 +94,6 @@ export function useMidi(maxEvents: number = 64) {
 
     return () => {
       disposed = true;
-      // Cleanup handler
       if (inputRef.current) inputRef.current.onmidimessage = null;
     };
   }, [supported, maxEvents]);
