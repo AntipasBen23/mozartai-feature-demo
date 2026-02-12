@@ -125,4 +125,4 @@ export function useSynth() {
   }, [noteOff]);
 
   return { supported, status, ensureStarted, noteOn, noteOff, stopAll };
-}h
+}
