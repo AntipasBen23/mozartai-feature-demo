@@ -1,13 +1,15 @@
 // frontend/src/app/page.tsx
 "use client";
 
-import React, { useMemo, useState } from "react";
+import React, { useEffect, useMemo, useRef, useState } from "react";
 import { Badge } from "./ui/Badge";
 import { Controls } from "./ui/Controls";
 import { GridHeader } from "./ui/GridHeader";
 import { TrackRow } from "./ui/TrackRow";
 import { BAR_COUNT, Genre, Project, Track } from "./ui/types";
 import { cx, ui } from "./ui/theme";
+import { useMidi } from "./hooks/useMidi";
+import { useSynth } from "./hooks/useSynth";
 
 export default function Page() {
   const projects: Project[] = useMemo(
@@ -29,7 +31,7 @@ export default function Page() {
   const [isPlaying, setIsPlaying] = useState(false);
 
   const [aiLog, setAiLog] = useState<string[]>([
-    "Ready. Try: “make it darker”, “add tension”, “more bounce”, “make it trance”.",
+    "Tip: click anywhere once to enable audio. Then play your MIDI keyboard.",
   ]);
   const [command, setCommand] = useState("");
 
@@ -40,12 +42,27 @@ export default function Page() {
     { id: "t4", name: "Pads", kind: "Pads", clips: [{ id: "c4", name: "AI Pads (mock)", startBar: 9, bars: 8, variant: "B" }] },
   ]);
 
+  const midi = useMidi(64);
+  const synth = useSynth();
+  const lastMidiTs = useRef<number>(0);
+
+  // Wire MIDI events -> synth
+  useEffect(() => {
+    const ev = midi.events[0];
+    if (!ev) return;
+    if (ev.ts === lastMidiTs.current) return;
+    lastMidiTs.current = ev.ts;
+
+    if (ev.type === "noteon") synth.noteOn(ev.note, ev.velocity);
+    else synth.noteOff(ev.note);
+  }, [midi.events, synth]);
+
   function toggleTrack(id: string, field: "muted" | "solo") {
     setTracks((prev) => prev.map((t) => (t.id === id ? { ...t, [field]: !t[field] } : t)));
   }
 
   function runMockAI(action: string) {
-    setAiLog((l) => [`Applied: ${action}`, `Context: {genre:${genre}, key:${keySig}, bpm:${bpm}, lock:${styleLock}}`, ...l].slice(0, 8));
+    setAiLog((l) => [`Applied: ${action}`, `Ctx: {${genre}, ${keySig}, ${bpm}bpm, lock:${styleLock}}`, ...l].slice(0, 8));
     setTracks((prev) =>
       prev.map((t) => {
         if (t.kind === "Bass" || t.kind === "Drums" || t.kind === "Pads") {
@@ -65,35 +82,41 @@ export default function Page() {
     setCommand("");
 
     const lower = text.toLowerCase();
-    if (lower.includes("darker")) runMockAI("Lower key + add minor tension");
-    else if (lower.includes("bounce")) runMockAI("Add swing + syncopation");
-    else if (lower.includes("tension")) runMockAI("Add passing chords + cadence");
+    if (lower.includes("darker")) runMockAI("Lower key + minor tension");
+    else if (lower.includes("bounce")) runMockAI("Swing + syncopation");
+    else if (lower.includes("tension")) runMockAI("Passing chords + cadence");
     else if (lower.includes("trance")) setGenre("Trance");
     else if (lower.includes("jazz")) setGenre("Jazz");
     else if (lower.includes("classical")) setGenre("Classical");
     else runMockAI("Refine groove + harmonize");
   }
 
+  const midiChip =
+    !midi.supported ? "MIDI: unsupported" : `MIDI: ${midi.status}${midi.inputName ? ` (${midi.inputName})` : ""}`;
+  const audioChip = !synth.supported ? "Audio: unsupported" : `Audio: ${synth.status}`;
+
   return (
-    <div className={cx(ui.page, "bg-black")}>
+    <div
+      className={cx(ui.page, "bg-black")}
+      onPointerDown={() => synth.ensureStarted()}
+      onKeyDown={() => synth.ensureStarted()}
+      tabIndex={-1}
+    >
       <div className={ui.shell}>
-        {/* Top status row (not a header/nav—just context chips) */}
         <div className="flex flex-wrap items-center justify-between gap-3">
           <div className="flex flex-wrap items-center gap-2">
-            <Badge>IGEM Demo</Badge>
+            <Badge>IGEM</Badge>
             <Badge>Project: {active.name}</Badge>
             <Badge>{genre}</Badge>
             <Badge>{keySig}</Badge>
             <Badge>{bpm} BPM</Badge>
+            <Badge className="text-white/60">{midiChip}</Badge>
+            <Badge className="text-white/60">{audioChip}</Badge>
           </div>
-
-          <div className="text-xs text-white/40">
-            Bars 1–{BAR_COUNT} • Frontend-only prototype
-          </div>
+          <div className="text-xs text-white/40">Bars 1–{BAR_COUNT} • Frontend-only</div>
         </div>
 
         <div className="mt-4 grid grid-cols-12 gap-4">
-          {/* Sidebar */}
           <aside className={cx("col-span-12 md:col-span-3", ui.panel, "p-3")}>
             <div className="flex items-center justify-between">
               <div className="text-sm font-semibold text-white/90">Projects</div>
@@ -109,7 +132,7 @@ export default function Page() {
                     setGenre(p.genre);
                     setKeySig(p.key);
                     setBpm(p.bpm);
-                    setAiLog((l) => [`Loaded project: ${p.name}`, ...l].slice(0, 8));
+                    setAiLog((l) => [`Loaded: ${p.name}`, ...l].slice(0, 8));
                   }}
                   className={cx(
                     "w-full rounded-lg border px-3 py-2 text-left transition",
@@ -123,11 +146,7 @@ export default function Page() {
                     <span className="text-xs text-white/40">{p.updated}</span>
                   </div>
                   <div className="mt-1 flex items-center gap-2 text-xs text-white/40">
-                    <span>{p.genre}</span>
-                    <span>•</span>
-                    <span>{p.key}</span>
-                    <span>•</span>
-                    <span>{p.bpm} BPM</span>
+                    <span>{p.genre}</span><span>•</span><span>{p.key}</span><span>•</span><span>{p.bpm} BPM</span>
                   </div>
                 </button>
               ))}
@@ -137,11 +156,8 @@ export default function Page() {
               <div className="flex items-start justify-between gap-3">
                 <div>
                   <div className="text-xs font-semibold text-white/80">Style Lock</div>
-                  <div className="mt-1 text-xs text-white/40">
-                    Prevents AI drift (key/tempo/motif stays stable).
-                  </div>
+                  <div className="mt-1 text-xs text-white/40">Stops AI drift (key/tempo/motif).</div>
                 </div>
-
                 <label className="flex cursor-pointer items-center gap-2">
                   <input
                     type="checkbox"
@@ -155,7 +171,6 @@ export default function Page() {
             </div>
           </aside>
 
-          {/* Main */}
           <main className="col-span-12 md:col-span-9 space-y-4">
             <Controls
               genre={genre}
@@ -168,7 +183,8 @@ export default function Page() {
               onPlayToggle={() => setIsPlaying((v) => !v)}
               onStop={() => {
                 setIsPlaying(false);
-                setAiLog((l) => ["Stopped playback.", ...l].slice(0, 8));
+                synth.stopAll();
+                setAiLog((l) => ["Stopped.", ...l].slice(0, 8));
               }}
               onHarmonize={() => runMockAI("Harmonize + add genre groove")}
             />
@@ -176,35 +192,33 @@ export default function Page() {
             <section className={cx(ui.panel, ui.panelPad)}>
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold text-white/90">Timeline</div>
-                <div className="text-xs text-white/40">MIDI capture + drag/drop next</div>
+                <div className="text-xs text-white/40">MIDI is live • drag/drop later</div>
               </div>
 
               <div className="mt-3 overflow-hidden rounded-lg border border-white/10">
                 <GridHeader />
-                <div>
-                  {tracks.map((t) => (
-                    <TrackRow
-                      key={t.id}
-                      track={t}
-                      onToggleMute={() => toggleTrack(t.id, "muted")}
-                      onToggleSolo={() => toggleTrack(t.id, "solo")}
-                    />
-                  ))}
-                </div>
+                {tracks.map((t) => (
+                  <TrackRow
+                    key={t.id}
+                    track={t}
+                    onToggleMute={() => toggleTrack(t.id, "muted")}
+                    onToggleSolo={() => toggleTrack(t.id, "solo")}
+                  />
+                ))}
               </div>
             </section>
 
             <section className={cx(ui.panel, ui.panelPad)}>
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold text-white/90">Natural Language Edit</div>
-                <div className="text-xs text-white/40">Intent → structured edits (mock)</div>
+                <div className="text-xs text-white/40">Intent → edits (mock)</div>
               </div>
 
               <form onSubmit={submitCommand} className="mt-3 flex gap-2">
                 <input
                   value={command}
                   onChange={(e) => setCommand(e.target.value)}
-                  placeholder='Try: "make it darker", "add tension", "more bounce", "make it trance"'
+                  placeholder='Try: "make it darker", "add tension", "more bounce"'
                   className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white/90 outline-none placeholder:text-white/30 focus:border-white/20"
                 />
                 <button type="submit" className={ui.btnPrimary}>
@@ -213,12 +227,10 @@ export default function Page() {
               </form>
 
               <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
-                <div className="text-xs font-semibold text-white/70">AI Log</div>
+                <div className="text-xs font-semibold text-white/70">Log</div>
                 <ul className="mt-2 space-y-1 text-xs text-white/50">
                   {aiLog.map((line, i) => (
-                    <li key={i} className="truncate">
-                      {line}
-                    </li>
+                    <li key={i} className="truncate">{line}</li>
                   ))}
                 </ul>
               </div>
