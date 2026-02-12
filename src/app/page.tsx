@@ -7,10 +7,14 @@ import { Controls } from "./ui/Controls";
 import { GridHeader } from "./ui/GridHeader";
 import { TrackRow } from "./ui/TrackRow";
 import { MidiMonitor } from "./ui/MidiMonitor";
+import { OnScreenPiano } from "./ui/OnScreenPiano";
 import { BAR_COUNT, Genre, Project, Track } from "./ui/types";
 import { cx, ui } from "./ui/theme";
-import { useMidi } from "./hooks/useMidi";
+import { useMidi, MidiNoteEvent } from "./hooks/useMidi";
 import { useSynth } from "./hooks/useSynth";
+
+type InputMode = "Auto" | "On-screen" | "MIDI";
+type BusEvent = MidiNoteEvent & { source: "MIDI" | "UI" };
 
 export default function Page() {
   const projects: Project[] = useMemo(
@@ -31,8 +35,11 @@ export default function Page() {
   const [styleLock, setStyleLock] = useState(true);
   const [isPlaying, setIsPlaying] = useState(false);
 
+  const [mode, setMode] = useState<InputMode>("Auto");
+
   const [aiLog, setAiLog] = useState<string[]>([
-    "Tip: click anywhere once to enable audio. Then play your MIDI keyboard.",
+    "Tip: click anywhere once to enable audio.",
+    "Input: Auto uses MIDI if found, otherwise on-screen piano.",
   ]);
   const [command, setCommand] = useState("");
 
@@ -45,35 +52,63 @@ export default function Page() {
 
   const midi = useMidi(64);
   const synth = useSynth();
-  const lastMidiTs = useRef<number>(0);
 
-  // Wire MIDI events -> synth
+  // Combined input event bus (MIDI + UI)
+  const [busEvents, setBusEvents] = useState<BusEvent[]>([]);
+  const BUS_MAX = 64;
+
+  function pushEvent(ev: BusEvent) {
+    setBusEvents((prev) => [ev, ...prev].slice(0, BUS_MAX));
+  }
+
+  // Piano clip pulse
+  const [pianoPulse, setPianoPulse] = useState(false);
+  const pulseTimer = useRef<number | null>(null);
+
+  function pulsePiano() {
+    setPianoPulse(true);
+    if (pulseTimer.current) window.clearTimeout(pulseTimer.current);
+    pulseTimer.current = window.setTimeout(() => setPianoPulse(false), 120);
+  }
+
+  // Decide if we should accept physical MIDI right now.
+  const allowMidi =
+    mode === "MIDI" ||
+    (mode === "Auto" &&
+      midi.status === "connected" &&
+      !!midi.inputName &&
+      !midi.inputName.includes("No MIDI devices"));
+
+  // Wire physical MIDI -> synth + bus
+  const lastMidiTs = useRef<number>(0);
   useEffect(() => {
+    if (!allowMidi) return;
+
     const ev = midi.events[0];
     if (!ev) return;
     if (ev.ts === lastMidiTs.current) return;
     lastMidiTs.current = ev.ts;
 
-    if (ev.type === "noteon") synth.noteOn(ev.note, ev.velocity);
-    else synth.noteOff(ev.note);
-  }, [midi.events, synth]);
+    pushEvent({ ...ev, source: "MIDI" });
+
+    if (ev.type === "noteon") {
+      synth.noteOn(ev.note, ev.velocity);
+      pulsePiano();
+    } else {
+      synth.noteOff(ev.note);
+    }
+  }, [allowMidi, midi.events, synth]);
 
   function toggleTrack(id: string, field: "muted" | "solo") {
     setTracks((prev) => prev.map((t) => (t.id === id ? { ...t, [field]: !t[field] } : t)));
   }
 
   function runMockAI(action: string) {
-    setAiLog((l) => [`Applied: ${action}`, `Ctx: {${genre}, ${keySig}, ${bpm}bpm, lock:${styleLock}}`, ...l].slice(0, 8));
+    setAiLog((l) => [`Applied: ${action}`, `Ctx: {${genre}, ${keySig}, ${bpm}bpm, lock:${styleLock}}`, ...l].slice(0, 10));
     setTracks((prev) =>
       prev.map((t) => {
         if (t.kind === "Bass" || t.kind === "Drums" || t.kind === "Pads") {
-          return {
-            ...t,
-            clips: t.clips.map((c) => ({
-              ...c,
-              name: c.name.replace(/\(mock.*\)/, `(mock • ${action})`),
-            })),
-          };
+          return { ...t, clips: t.clips.map((c) => ({ ...c, name: c.name.replace(/\(mock.*\)/, `(mock • ${action})`) })) };
         }
         return t;
       })
@@ -85,7 +120,7 @@ export default function Page() {
     const text = command.trim();
     if (!text) return;
 
-    setAiLog((l) => [`You: “${text}”`, ...l].slice(0, 8));
+    setAiLog((l) => [`You: “${text}”`, ...l].slice(0, 10));
     setCommand("");
 
     const lower = text.toLowerCase();
@@ -98,9 +133,48 @@ export default function Page() {
     else runMockAI("Refine groove + harmonize");
   }
 
+  // On-screen piano handlers (UI -> synth + bus)
+  function handleUiNoteOn(note: number, velocity: number = 110) {
+    if (mode === "MIDI") return;
+
+    const ev: BusEvent = {
+      type: "noteon",
+      note,
+      velocity,
+      channel: 0,
+      ts: performance.now(),
+      source: "UI",
+    };
+    pushEvent(ev);
+
+    synth.noteOn(note, velocity);
+    pulsePiano();
+  }
+
+  function handleUiNoteOff(note: number) {
+    if (mode === "MIDI") return;
+
+    const ev: BusEvent = {
+      type: "noteoff",
+      note,
+      velocity: 0,
+      channel: 0,
+      ts: performance.now(),
+      source: "UI",
+    };
+    pushEvent(ev);
+
+    synth.noteOff(note);
+  }
+
   const midiChip =
     !midi.supported ? "MIDI: unsupported" : `MIDI: ${midi.status}${midi.inputName ? ` (${midi.inputName})` : ""}`;
   const audioChip = !synth.supported ? "Audio: unsupported" : `Audio: ${synth.status}`;
+
+  function clearMonitor() {
+    midi.clear();
+    setBusEvents([]);
+  }
 
   return (
     <div
@@ -119,12 +193,12 @@ export default function Page() {
             <Badge>{bpm} BPM</Badge>
             <Badge className="text-white/60">{midiChip}</Badge>
             <Badge className="text-white/60">{audioChip}</Badge>
+            <Badge className="text-white/60">Input: {mode}</Badge>
           </div>
           <div className="text-xs text-white/40">Bars 1–{BAR_COUNT} • Frontend-only</div>
         </div>
 
         <div className="mt-4 grid grid-cols-12 gap-4">
-          {/* Sidebar */}
           <aside className={cx("col-span-12 md:col-span-3", ui.panel, "p-3")}>
             <div className="flex items-center justify-between">
               <div className="text-sm font-semibold text-white/90">Projects</div>
@@ -140,13 +214,11 @@ export default function Page() {
                     setGenre(p.genre);
                     setKeySig(p.key);
                     setBpm(p.bpm);
-                    setAiLog((l) => [`Loaded: ${p.name}`, ...l].slice(0, 8));
+                    setAiLog((l) => [`Loaded: ${p.name}`, ...l].slice(0, 10));
                   }}
                   className={cx(
                     "w-full rounded-lg border px-3 py-2 text-left transition",
-                    p.id === activeProjectId
-                      ? "border-white/15 bg-white/[0.08]"
-                      : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
+                    p.id === activeProjectId ? "border-white/15 bg-white/[0.08]" : "border-white/10 bg-white/[0.03] hover:bg-white/[0.06]"
                   )}
                 >
                   <div className="flex items-center justify-between">
@@ -154,11 +226,7 @@ export default function Page() {
                     <span className="text-xs text-white/40">{p.updated}</span>
                   </div>
                   <div className="mt-1 flex items-center gap-2 text-xs text-white/40">
-                    <span>{p.genre}</span>
-                    <span>•</span>
-                    <span>{p.key}</span>
-                    <span>•</span>
-                    <span>{p.bpm} BPM</span>
+                    <span>{p.genre}</span><span>•</span><span>{p.key}</span><span>•</span><span>{p.bpm} BPM</span>
                   </div>
                 </button>
               ))}
@@ -183,7 +251,6 @@ export default function Page() {
             </div>
           </aside>
 
-          {/* Main */}
           <main className="col-span-12 md:col-span-9 space-y-4">
             <Controls
               genre={genre}
@@ -197,23 +264,30 @@ export default function Page() {
               onStop={() => {
                 setIsPlaying(false);
                 synth.stopAll();
-                setAiLog((l) => ["Stopped.", ...l].slice(0, 8));
+                setAiLog((l) => ["Stopped.", ...l].slice(0, 10));
               }}
               onHarmonize={() => runMockAI("Harmonize + add genre groove")}
             />
 
-            {/* NEW: MIDI Monitor panel */}
+            <OnScreenPiano
+              mode={mode}
+              setMode={setMode}
+              onNoteOn={handleUiNoteOn}
+              onNoteOff={handleUiNoteOff}
+              label="Input (MIDI + On-screen)"
+            />
+
             <MidiMonitor
-              events={midi.events}
+              events={busEvents}
               status={midi.status}
               inputName={midi.inputName}
-              onClear={midi.clear}
+              onClear={clearMonitor}
             />
 
             <section className={cx(ui.panel, ui.panelPad)}>
               <div className="flex items-center justify-between">
                 <div className="text-sm font-semibold text-white/90">Timeline</div>
-                <div className="text-xs text-white/40">MIDI is live • drag/drop later</div>
+                <div className="text-xs text-white/40">Drag/drop later</div>
               </div>
 
               <div className="mt-3 overflow-hidden rounded-lg border border-white/10">
@@ -224,6 +298,8 @@ export default function Page() {
                     track={t}
                     onToggleMute={() => toggleTrack(t.id, "muted")}
                     onToggleSolo={() => toggleTrack(t.id, "solo")}
+                    pulseClipId={t.id === "t1" ? "c1" : undefined}
+                    pulse={t.id === "t1" ? pianoPulse : false}
                   />
                 ))}
               </div>
@@ -242,18 +318,14 @@ export default function Page() {
                   placeholder='Try: "make it darker", "add tension", "more bounce"'
                   className="w-full rounded-lg border border-white/10 bg-white/[0.03] px-3 py-2 text-sm text-white/90 outline-none placeholder:text-white/30 focus:border-white/20"
                 />
-                <button type="submit" className={ui.btnPrimary}>
-                  Apply
-                </button>
+                <button type="submit" className={ui.btnPrimary}>Apply</button>
               </form>
 
               <div className="mt-3 rounded-lg border border-white/10 bg-white/[0.03] p-3">
                 <div className="text-xs font-semibold text-white/70">Log</div>
                 <ul className="mt-2 space-y-1 text-xs text-white/50">
                   {aiLog.map((line, i) => (
-                    <li key={i} className="truncate">
-                      {line}
-                    </li>
+                    <li key={i} className="truncate">{line}</li>
                   ))}
                 </ul>
               </div>
